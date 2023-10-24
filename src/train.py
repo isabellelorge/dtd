@@ -197,7 +197,7 @@ def main():
                 loss = calculate_loss(start_logits=start_logits, end_logits=end_logits,
                                         span_logits=span_logits, n_spans_logits=n_spans_logits,
                                         start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, n_spans=n_spans,
-                                        label_pos_weights=label_pos_weights)
+                                        label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights)
 
                 label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy()
                 start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
@@ -218,8 +218,8 @@ def main():
                 spans_pred.extend(span_preds)
                 spans_true.extend(spans_cpu)
 
-                unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
-                print(classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels))
+            unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
+            print(classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels))
 
 
 if __name__ == "__main__":
