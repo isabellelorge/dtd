@@ -114,7 +114,8 @@ def calculate_loss(start_logits, end_logits, span_logits, n_spans_logits,
   crit_starts = nn.BCEWithLogitsLoss()
   crit_ends = nn.BCEWithLogitsLoss()
   crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
-  crit_spans = nn.CrossEntropyLoss(pos_weight=n_spans_pos_weights)
+  # crit_spans = nn.CrossEntropyLoss(pos_weight=n_spans_pos_weights)
+  crit_spans = nn.CrossEntropyLoss()
 
   starts_loss = crit_starts(start_logits, start_idxs.float()) # start_probs and end_probs have size batch * n_tokens
   ends_loss = crit_ends(end_logits, end_idxs.float())
