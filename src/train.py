@@ -18,7 +18,7 @@ def main():
 
     # Read arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--path_sentence_df', type=str, default='/mnt/sdg/isabelle/dtd_project/data/annotations/span_level_annot/processed_sentences_labels/simplified.csv', help='Path to df with sentences, start/ends and labels.')
+    parser.add_argument('--path_sentence_df', type=str, help='Path to df with sentences, start/ends and labels.')
     parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs.')
     parser.add_argument('--random_seed', type=int, default=1, help='Random seed.')
     parser.add_argument('--lr', type=float, default=3e-05, help='Learning rate.')
@@ -27,7 +27,6 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size.')
     parser.add_argument('--bert_path', type=str, default='bert-base-cased', help='Bert path to use.')
     parser.add_argument('--num_labels', type=int, default=41, help='Number of labels.')
-    parser.add_argument('--max_spans', type=int, default=10, help='Maximum possible number of spans per sentence.')
     parser.add_argument('--test', type=bool, default=False, help='Using test set.')
 
     args = parser.parse_args()
@@ -42,6 +41,7 @@ def main():
     # print(sentence_df['labels'])
   
     df_train, df_val, df_test = create_train_val_test(sentence_df, bert_path='bert-base-cased')
+    # df_train = df_train.iloc[:1000]
     random_seed = args.random_seed
     print('SEED:', random_seed, 'TEST:', args.test)
    
@@ -51,20 +51,22 @@ def main():
     os.environ['PYTHONHASHSEED'] = str(random_seed)
     torch.cuda.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
-    device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cuda:1') if torch.cuda.is_available() else torch.device('cpu')
     # datasets
-    train_dataset = BertDataset(df_train, args.bert_path, num_labels=args.num_labels)
-    eval_dataset = BertDataset(df_val, args.bert_path, num_labels=args.num_labels)
+    max_spans = df_train['n_spans'].max()+1
+    print(type(max_spans), max_spans)
+    train_dataset = BertDataset(df_train, args.bert_path, num_labels=args.num_labels, max_spans=max_spans)
+    eval_dataset = BertDataset(df_val, args.bert_path, num_labels=args.num_labels, max_spans=max_spans)
 
     # positive label weights for imbalanced labels
     label_pos_weights = calculate_pos_weights(df_train['labels'], num_labels=args.num_labels, one_hot=False)
     print('most frequent label', np.argmin(label_pos_weights)) # this should be 40 (no label)
     label_pos_weights = torch.tensor(label_pos_weights).to(device)
-    n_spans_pos_weights = calculate_pos_weights(df_train['n_spans'], num_labels=args.max_spans+1, one_hot=False)
+    n_spans_pos_weights = calculate_pos_weights(df_train['n_spans'], num_labels=max_spans, one_hot=False)
     n_spans_pos_weights = torch.tensor(n_spans_pos_weights).to(device)
 
     # initialise model and optimizer
-    model = SpanClassifier(bert_path=args.bert_path, batch_size=args.batch_size, num_labels=args.num_labels, dropout_rate=args.dropout_rate).to(device)
+    model = SpanClassifier(bert_path=args.bert_path, batch_size=args.batch_size, num_labels=args.num_labels, dropout_rate=args.dropout_rate, max_spans=max_spans).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # training
@@ -107,8 +109,8 @@ def main():
             optimizer.zero_grad()
 
             # run model
-            start_logits, end_logits, span_logits, n_spans_logits = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
-
+            start_logits, end_logits, span_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
+  
             # current metrics
             loss = calculate_loss(start_logits=start_logits, end_logits=end_logits,
                                 span_logits=span_logits, n_spans_logits=n_spans_logits,
@@ -142,17 +144,23 @@ def main():
             train_ends_f1+=ends_f1m.item()
             train_spans_f1+=spans_f1m.item()
 
-            if batch_idx % 10 == 0 and batch_idx != 0:
+            if batch_idx % 100 == 0 and batch_idx != 0:
                 print(f'Processed {(batch_idx * args.batch_size)} examples...')
                 print('BATCH IDX', batch_idx)
                 print('LOSS', loss)
                 print('AVG_LOSS:', train_loss/batch_idx)
                 print('prec recal labels', labels_precision_recall)
-                print('AVG_labels_F1:', train_labels_f1/batch_idx)
-                print('AVG_starts_F1:', train_starts_f1/batch_idx)
-                print('AVG_ends_F1:', train_ends_f1/batch_idx)
-                print('AVG_spans_F1:', train_spans_f1/batch_idx)
-
+                # print('AVG_labels_F1:', train_labels_f1/batch_idx)
+                # print('AVG_starts_F1:', train_starts_f1/batch_idx)
+                # print('AVG_ends_F1:', train_ends_f1/batch_idx)
+                # print('AVG_spans_F1:', train_spans_f1/batch_idx)
+                
+                # if preds_labels:
+                #     print('TOP LABEL PREDS', preds_labels[0], np.nonzero(labels[0]))
+                # if preds_starts:
+                #     print('TOP START PREDS', preds_starts[0], np.nonzero(start_idxs[0]))
+                # if preds_ends:
+                #     print('TOP END PREDS', preds_ends[0], np.nonzero(end_idxs[0]))
                 print('LABEL PREDS', np.nonzero(label_preds[0]), np.nonzero(labels[0]))
                 print('START PREDS', np.nonzero(start_preds[0]), np.nonzero(start_idxs[0]))
                 print('END PREDS', np.nonzero(end_preds[0]), np.nonzero(end_idxs[0]))
@@ -191,7 +199,7 @@ def main():
                 n_spans = n_spans.to(device)
 
                 # run model
-                start_logits, end_logits, span_logits, n_spans_logits = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
+                start_logits, end_logits, span_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
 
                 # current metrics
                 loss = calculate_loss(start_logits=start_logits, end_logits=end_logits,
@@ -199,11 +207,15 @@ def main():
                                         start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, n_spans=n_spans,
                                         label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights)
 
-                label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy()
-                start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
-                end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
+                # label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy()
+                # start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
+                # end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
                 span_preds = torch.argmax(n_spans_logits, dim=1)
+                label_preds = preds_labels.cpu().detach().numpy()
+                start_preds = preds_starts.cpu().detach().numpy()
+                end_preds = preds_ends.cpu().detach().numpy()
 
+                # ground truth
                 labels_cpu = labels.cpu().detach().numpy()
                 starts_cpu = start_idxs.cpu().detach().numpy()
                 ends_cpu = end_idxs.cpu().detach().numpy()

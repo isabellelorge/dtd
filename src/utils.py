@@ -2,6 +2,7 @@ import pandas as pd
 import spacy
 import re
 import random
+from ast import literal_eval
 
 nlp = spacy.load("en_core_web_sm")
 
@@ -10,7 +11,7 @@ targets = ['older_age', 'family_member_mental_disorder', ':abuse', 'childhood_ab
            'physical_comorbidity', 'mental_comorbidity', 'substance_abuse', 'anhedonia', 'illness_early_onset',
            'multiple_antidepressants', 'antidepressant_dosage_increase', 'multiple_psychotherapies', 'side_effects', 'non_adherence']
 
-def create_label_dict(targets):
+def create_label_dict():
     # create integers/labels dictionary
     targets_polar =([f'{t}_POSITIVE' for t in targets]+[f'{t}_NEGATIVE' for t in targets])
     targets_polar.append('NO_ANNOTATION')
@@ -69,7 +70,7 @@ def get_label(label_text, regex, d):
     return l
 
 
-def get_spans(sentence, regex):
+def get_spans(sentence, regex, d):
   # divide sentences into spans, get start/ends and labels 
   start_idxs = []
   end_idxs = []
@@ -86,7 +87,7 @@ def get_spans(sentence, regex):
     clean_span = re.sub(regex, '', sentence[start:span[1]]).strip() # get all text until relevant label
     start = span[1] # switch start to end of previous label
     label_text = sentence[span[0]:span[1]]
-    l = get_label(label_text, regex)
+    l = get_label(label_text, regex, d)
     if l != [] and clean_span.strip() != '': # if there is label AND clean span is not empty, append 
       labels.append(l)
       spans_text.append(clean_span)
@@ -122,6 +123,7 @@ def create_missing_idxs(sentence_df):
 
 def get_sentences_labels(annot_df):
   # wrapper function to preprocess raw labelled notes dataset into sentences with start/end of spans and labels
+  d = create_label_dict(targets)
   annot_df = process_annot_df(annot_df)
   regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
   sentence_df = pd.DataFrame()
@@ -136,14 +138,13 @@ def get_sentences_labels(annot_df):
   regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
 
   for idx, note in annot_df['notes'].items():
-    print('IDX', idx)
     note =  re.sub('\d\.\d', '1', note)
     note = re.sub('Ms\.|Mr\.', '', note)
     sents = note.split('.') # using more sophisticated sentencizer eg Spacy too inconsistent/unpredictable
     for sentence in sents:
       orig_sentences.append(sentence)
       ids.append(idx)
-      labels, spans_text, clean_sentence, start_idxs, end_idxs = get_spans(sentence, regex)
+      labels, spans_text, clean_sentence, start_idxs, end_idxs = get_spans(sentence, regex, d)
       # print(labels, start_idxs, end_idxs, spans_text, repr(sentence))
       all_labels.append(labels)
       sentences.append(clean_sentence)
@@ -163,8 +164,9 @@ def get_sentences_labels(annot_df):
   sentence_df['n_spans'] = n_spans
   sentence_df = sentence_df[sentence_df['sentences'].str.len() > 2].reset_index(drop=True)
 
-  sentence_df = clean_df(sentence_df)
-  sentence_df = create_missing_idxs(sentence_df)
+  sentence_df = clean_df(sentence_df).reset_index(drop=True)
+  sentence_df = create_missing_idxs(sentence_df).reset_index(drop=True)
+  print(count_labels(sentence_df, d))
   return sentence_df
 
 def count_labels(sentence_df, d):

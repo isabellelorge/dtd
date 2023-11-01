@@ -7,7 +7,7 @@ import pandas as pd
 
 class BertDataset(Dataset):
 
-    def __init__(self, df, bert_path, num_labels, max_spans=10):
+    def __init__(self, df, bert_path, num_labels, max_spans):
         self.tok = BertTokenizerFast.from_pretrained(bert_path)
         # labels
         self.labels = list(df['labels'])
