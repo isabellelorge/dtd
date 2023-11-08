@@ -80,15 +80,16 @@ def get_spans(sentence, regex, d):
 
   # clean sentence
   clean_sentence = re.sub(regex, '', sentence).strip()
-
+  clean_sentence = re.sub(r'\s{2,}', ' ', clean_sentence)
   # find all labels in sentence
   spans_idxs = [i.span() for i in re.finditer(regex, sentence)]
   for span in spans_idxs:
     clean_span = re.sub(regex, '', sentence[start:span[1]]).strip() # get all text until relevant label
+    clean_span = re.sub(r'\s{2,}', ' ', clean_span)
     start = span[1] # switch start to end of previous label
     label_text = sentence[span[0]:span[1]]
     l = get_label(label_text, regex, d)
-    if l != [] and clean_span.strip() != '': # if there is label AND clean span is not empty, append 
+    if l != [] and clean_span != '': # if there is label AND clean span is not empty, append 
       labels.append(l)
       spans_text.append(clean_span)
       clean_idxs = list(re.finditer(re.escape(clean_span), clean_sentence))[0].span()
@@ -123,7 +124,7 @@ def create_missing_idxs(sentence_df):
 
 def get_sentences_labels(annot_df):
   # wrapper function to preprocess raw labelled notes dataset into sentences with start/end of spans and labels
-  d = create_label_dict(targets)
+  d = create_label_dict()
   annot_df = process_annot_df(annot_df)
   regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
   sentence_df = pd.DataFrame()
@@ -135,7 +136,6 @@ def get_sentences_labels(annot_df):
   all_end_idxs = []
   spans = []
   n_spans = []
-  regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
 
   for idx, note in annot_df['notes'].items():
     note =  re.sub('\d\.\d', '1', note)
@@ -145,7 +145,7 @@ def get_sentences_labels(annot_df):
       orig_sentences.append(sentence)
       ids.append(idx)
       labels, spans_text, clean_sentence, start_idxs, end_idxs = get_spans(sentence, regex, d)
-      # print(labels, start_idxs, end_idxs, spans_text, repr(sentence))
+      # print(labels, start_idxs, end_idxs, spans_text, clean_sentence, repr(sentence))
       all_labels.append(labels)
       sentences.append(clean_sentence)
       all_start_idxs.append(start_idxs)
@@ -166,11 +166,14 @@ def get_sentences_labels(annot_df):
 
   sentence_df = clean_df(sentence_df).reset_index(drop=True)
   sentence_df = create_missing_idxs(sentence_df).reset_index(drop=True)
-  print(count_labels(sentence_df, d))
+  print(count_labels(sentence_df))
   return sentence_df
 
-def count_labels(sentence_df, d):
+def count_labels(sentence_df):
+  d = create_label_dict()
   d_labels = {}
+  if type(sentence_df['labels'].iloc[0]) != list:
+    sentence_df['labels'] = sentence_df['labels'].apply(lambda x: literal_eval(x))
   for l in sentence_df['labels']:
     for i in l:
       if i in d_labels:
@@ -179,3 +182,43 @@ def count_labels(sentence_df, d):
         d_labels[i]=1
   return {[i for i in d if d[i]==k][0]: v for k, v in sorted(d_labels.items(), key=lambda item: item[1], reverse=True)}
 
+
+def create_merged_labels_dict():
+    d = create_label_dict()
+    merged_labels = {}
+    seen_values = set()
+    idx = 0
+    for key, value in d.items():
+        match = re.search(r'(.+)_(POSITIVE|NEGATIVE)$', key)
+        if match:
+            base_key = match.group(1)
+            if 'POSITIVE' in key:
+                pair_value =  d[base_key + '_NEGATIVE']
+            else:
+                pair_value = d[base_key + '_POSITIVE']
+            if value not in seen_values and pair_value not in seen_values:
+                seen_values.update([value, pair_value])
+                merged_labels[(value, pair_value)] = idx
+                idx+=1
+        else:
+            merged_labels[value] = idx
+            idx +=1
+   
+    return merged_labels
+
+
+def get_merged_label(l, merged_labels):
+    d = create_label_dict()
+    no_annot = [d[i] for i in d if i == 'NO_ANNOTATION'][0]
+    k = set(list(merged_labels.keys()))
+    k.remove(no_annot)
+    merged = []
+    for i in l:
+        if i == no_annot:
+            m = merged_labels[no_annot]
+        else:
+            for key in k:
+                if i in key:
+                    m = merged_labels[key]
+        merged.append(m)
+    return merged

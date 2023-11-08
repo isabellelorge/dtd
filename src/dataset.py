@@ -49,9 +49,9 @@ class BertDataset(Dataset):
 def get_token_idxs_from_char_idxs(char_idxs, offsets, ends=False):
   if char_idxs[0]==0 and offsets[1][0]!=0: # when the char range of first word does not start at 0,
     char_idxs[0] = offsets[1][0] # set start_idx on first char of first word in sentence
-  if ends==True:
-    char_idxs = [i-1 for i in char_idxs] # the offsets are inclusive but end char idxs are exclusive, so remove 1 to be inside token
   mask = [idx for idx, i in enumerate(offsets) if i[1] !=0 and bool(set(char_idxs) & set(range(i[0], i[1]+1)))]
+  if ends==True:
+     mask = list(np.array(mask)+1)
   return mask
 
 
@@ -70,6 +70,7 @@ def collate(batch):
   segs_pad = torch.zeros((batch_size, max_len), dtype=torch.int64)
   starts_pad = torch.zeros((batch_size, max_len), dtype=torch.int64) # full padding is maybe very inefficient...
   ends_pad = torch.zeros((batch_size, max_len), dtype=torch.int64)
+  labels_tokens_pad = torch.zeros((batch_size, max_len), dtype=torch.int64)
 
   for i, s in enumerate(ids):
       sent_pad[i, :len(s)] = torch.tensor(s) # put the embedding in the padded tensor
@@ -77,10 +78,12 @@ def collate(batch):
       # leave segs to 0 since not sentence pair classification
       start_token_idxs = get_token_idxs_from_char_idxs(start_char_idxs[i], offsets[i])
       end_token_idxs = get_token_idxs_from_char_idxs(end_char_idxs[i], offsets[i], ends=True)
+      for start, end, label in zip(start_token_idxs, end_token_idxs, torch.nonzero(labels[i])):
+        labels_tokens_pad[i, start:end] = label
       starts_pad[i, start_token_idxs] = 1
       ends_pad[i, end_token_idxs] = 1
 
-  return labels, sent_pad, masks_pad, segs_pad, starts_pad, ends_pad, n_spans
+  return labels, sent_pad, masks_pad, segs_pad, starts_pad, ends_pad, labels_tokens_pad, n_spans
 
 
 def calculate_pos_weights(labels, num_labels, one_hot=True):
