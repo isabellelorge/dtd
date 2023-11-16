@@ -38,7 +38,8 @@ def main():
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size.')
     parser.add_argument('--bert_path', type=str, default='bert-base-cased', help='Bert path to use.')
     parser.add_argument('--test', type=bool, default=False, help='Using test set.')
-    parser.add_argument('--token_level', type=bool, default=False, help='Token-level classification instead of span extraction.')
+    parser.add_argument('--level', type=str, default='span', help='Sentence-level classification instead of span extraction.')
+    parser.add_argument('--pos_weights', type=bool, default=False, help='Using weighted loss by class.')
 
     args = parser.parse_args()
     df_path = f'{args.dir_sentence_df}/{args.path_sentence_df}'
@@ -69,17 +70,18 @@ def main():
     train_dataset = BertDataset(df_train, args.bert_path, num_labels=num_labels, max_spans=max_spans)
     eval_dataset = BertDataset(df_val, args.bert_path, num_labels=num_labels, max_spans=max_spans)
 
-
     # positive label weights for imbalanced labels
     label_pos_weights = calculate_pos_weights(df_train['labels'], num_labels=num_labels, one_hot=False)
     n_spans_pos_weights = calculate_pos_weights(df_train['n_spans'], num_labels=max_spans, one_hot=False)
 
     # print info 
-    print('seed:', random_seed, 'test:', args.test)
+    print('seed:', random_seed)
+    print('test:', args.test)
     print('most frequent label:', np.argmin(label_pos_weights)) # this should be 40 (no label)
-    print('token_level:', args.token_level)
     print('num labels:', num_labels)
-    print('max number of spans:', max_spans) 
+    print('max number of spans:', max_spans)
+    print('level:', args.level)
+    print('pos_weight:', args.pos_weights)
 
     label_pos_weights = torch.tensor(label_pos_weights).to(device)
     n_spans_pos_weights = torch.tensor(n_spans_pos_weights).to(device)
@@ -91,7 +93,7 @@ def main():
                            num_labels=num_labels, 
                            dropout_rate=args.dropout_rate, 
                            max_spans=max_spans,
-                           token_level=args.token_level).to(device)
+                           level=args.level).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # training
@@ -130,24 +132,31 @@ def main():
             optimizer.zero_grad()
 
             # run model
-            token_logits, start_logits, end_logits, span_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
+            start_logits, end_logits, label_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs,
+                                                                                                                               )
   
             # current metrics
             loss = calculate_loss(start_logits=start_logits, end_logits=end_logits,
-                                span_logits=span_logits, token_logits = token_logits, n_spans_logits=n_spans_logits,
+                                label_logits=label_logits, n_spans_logits=n_spans_logits,
                                 start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, tokens=labels_tokens, n_spans=n_spans,
-                                label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights, token_level=args.token_level)
+                                label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights, 
+                                level=args.level,
+                                use_pos_weight=args.pos_weights)
 
-            if args.token_level == True:
-                token_preds = torch.argmax(torch.nn.functional.softmax(token_logits, dim=1) , dim=1).cpu().detach().numpy()  # n tokens*classes
+            if args.level == 'token':
+                token_preds = torch.argmax(torch.nn.functional.softmax(label_logits, dim=1) , dim=1).cpu().detach().numpy()  # n tokens*classes
                 tokens_cpu = labels_tokens.cpu().detach().numpy()
                 tokens_f1  = f1_score(token_preds, tokens_cpu.flatten(), average = 'macro', zero_division=0)
+            elif args.level == 'sentence':
+                label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
+                labels_cpu = labels.cpu().detach().numpy()
+                labels_f1  = f1_score(label_preds, labels_cpu, average = 'macro', zero_division=0)
             else:
                 # predictions 
                 start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
                 end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
                 span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
-                label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy()
+                label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
                 # cpu ground truths
                 labels_cpu = labels.cpu().detach().numpy()
                 starts_cpu = start_idxs.cpu().detach().numpy()
@@ -166,9 +175,12 @@ def main():
                 print('BATCH IDX', batch_idx)
                 print('LOSS', loss)
                 print('AVG_LOSS:', train_loss/batch_idx)
-                if args.token_level == True:
+                if args.level == 'token':
                     print('F1 TOKENS', tokens_f1)
                     print('TOKEN PREDS',token_preds[:100], tokens_cpu.flatten()[:100])
+                elif args.level=='sentence':
+                    print('F1 SENT', labels_f1)
+                    print('SENT PREDS', np.nonzero(label_preds[0]), np.nonzero(labels[0]))
                 else:
                     print('PREC/RECALL LABELS', labels_precision_recall)
                     print('START PREDS', np.nonzero(start_preds[0]), np.nonzero(start_idxs[0]))
@@ -212,18 +224,23 @@ def main():
                 n_spans = n_spans.to(device)
 
                 # run model
-                token_logits, start_logits, end_logits, span_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
+                start_logits, end_logits, label_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
 
                 # label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy() # original label preds (all)
                 # start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
                 # end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
 
-                if args.token_level == True:
-                    token_preds = torch.argmax(torch.nn.functional.softmax(token_logits, dim=1) , dim=1).cpu().detach().numpy()
+                if args.level == 'token':
+                    token_preds = torch.argmax(torch.nn.functional.softmax(label_logits, dim=1) , dim=1).cpu().detach().numpy()
                     tokens_cpu = labels_tokens.cpu().detach().numpy()
-
                     tokens_pred.extend(token_preds)
                     tokens_true.extend(tokens_cpu.flatten())
+
+                elif args.level == 'sentence':
+                    label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
+                    labels_cpu = labels.cpu().detach().numpy()
+                    labels_pred.extend(label_preds)
+                    labels_true.extend(labels_cpu)
                 else:
                    # label preds only for predicted top spans
                     start_preds = preds_starts.cpu().detach().numpy()
@@ -244,9 +261,13 @@ def main():
                     n_spans_pred.extend(n_span_preds)
                     n_spans_true.extend(n_spans_cpu)
               
-            if args.token_level == True:
+            if args.level == 'token':
                 print(classification_report(tokens_true, tokens_pred, zero_division=0))
                 report_dict = classification_report(tokens_true, tokens_pred, zero_division=0, output_dict=True)
+            elif args.level == 'sentence':
+                # unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
+                print(classification_report(labels_true, labels_pred, zero_division=0))
+                report_dict = classification_report(labels_true, labels_pred, zero_division=0, output_dict=True)
             else:
                 unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
                 print(classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels))
