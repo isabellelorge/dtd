@@ -8,10 +8,11 @@ import torch
 from itertools import chain
 from torch.utils.data import DataLoader
 from torch import optim
-from sklearn.metrics import classification_report, f1_score, precision_recall_fscore_support
+import matplotlib.pyplot as plt
+from sklearn.metrics import classification_report, f1_score, precision_recall_fscore_support, confusion_matrix, ConfusionMatrixDisplay
 from dataset import create_train_val_test, BertDataset, calculate_pos_weights, collate
 from models import SpanClassifier, calculate_loss
-from utils import create_missing_idxs
+from utils import create_missing_idxs, create_label_dict
 from ast import literal_eval
 from datetime import datetime
 import os
@@ -23,6 +24,7 @@ if not os.path.exists(base_dir):
     os.makedirs(base_dir)
 
 torch.autograd.set_detect_anomaly(True)
+d = create_label_dict()
 
 def main():
 
@@ -30,7 +32,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir_sentence_df', type=str, default = '/mnt/sdg/isabelle/dtd_project/data/annotations/span_level_annot/processed_sentences_labels', help='Path to df with sentences, start/ends and labels.')
     parser.add_argument('--path_sentence_df', type=str, help='Path to df with sentences, start/ends and labels.')
-    parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs.')
+    parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs.')
     parser.add_argument('--random_seed', type=int, default=1, help='Random seed.')
     parser.add_argument('--lr', type=float, default=3e-05, help='Learning rate.')
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate.')
@@ -50,6 +52,9 @@ def main():
     sentence_df['labels'] = sentence_df['labels'].apply(lambda x: literal_eval(x))
     sentence_df = create_missing_idxs(sentence_df)
     sentence_df['labels_unique'] = sentence_df['labels'].apply(lambda x: list(set(x)))
+
+    # to avoid zeros clashing with masked tokens in token-level classification
+    sentence_df['labels_unique'] = sentence_df['labels_unique'].apply(lambda x: [i+1 for i in x])
   
     df_train, df_val, df_test = create_train_val_test(sentence_df, bert_path='bert-base-cased')
     # df_train = df_train.iloc[:1000]
@@ -62,10 +67,12 @@ def main():
     os.environ['PYTHONHASHSEED'] = str(random_seed)
     torch.cuda.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
-    device = torch.device('cuda:1') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cuda:2') if torch.cuda.is_available() else torch.device('cpu')
 
     # datasets
     num_labels = len(set(list(chain.from_iterable(sentence_df['labels']))))
+    if args.level == 'token':
+        num_labels+=1
     max_spans = sentence_df['n_spans'].max()+1
     train_dataset = BertDataset(df_train, args.bert_path, num_labels=num_labels, max_spans=max_spans)
     eval_dataset = BertDataset(df_val, args.bert_path, num_labels=num_labels, max_spans=max_spans)
@@ -73,6 +80,10 @@ def main():
     # positive label weights for imbalanced labels
     label_pos_weights = calculate_pos_weights(df_train['labels'], num_labels=num_labels, one_hot=False)
     n_spans_pos_weights = calculate_pos_weights(df_train['n_spans'], num_labels=max_spans, one_hot=False)
+    if args.level == 'sentence':
+        pos_weights = args.pos_weights
+    else:
+        pos_weights = True 
 
     # print info 
     print('seed:', random_seed)
@@ -81,7 +92,8 @@ def main():
     print('num labels:', num_labels)
     print('max number of spans:', max_spans)
     print('level:', args.level)
-    print('pos_weight:', args.pos_weights)
+    print('pos_weight:', pos_weights)
+    print('label pos weights', label_pos_weights)
 
     label_pos_weights = torch.tensor(label_pos_weights).to(device)
     n_spans_pos_weights = torch.tensor(n_spans_pos_weights).to(device)
@@ -141,7 +153,13 @@ def main():
                                 start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, tokens=labels_tokens, n_spans=n_spans,
                                 label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights, 
                                 level=args.level,
-                                use_pos_weight=args.pos_weights)
+                                use_pos_weight=pos_weights)
+            
+            # cpu ground truths
+            labels_cpu = labels.cpu().detach().numpy()
+            starts_cpu = start_idxs.cpu().detach().numpy()
+            ends_cpu = end_idxs.cpu().detach().numpy()
+            n_spans_cpu = n_spans.cpu().detach().numpy()
 
             if args.level == 'token':
                 token_preds = torch.argmax(torch.nn.functional.softmax(label_logits, dim=1) , dim=1).cpu().detach().numpy()  # n tokens*classes
@@ -149,7 +167,7 @@ def main():
                 tokens_f1  = f1_score(token_preds, tokens_cpu.flatten(), average = 'macro', zero_division=0)
             elif args.level == 'sentence':
                 label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
-                labels_cpu = labels.cpu().detach().numpy()
+                # span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
                 labels_f1  = f1_score(label_preds, labels_cpu, average = 'macro', zero_division=0)
             else:
                 # predictions 
@@ -157,11 +175,7 @@ def main():
                 end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
                 span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
                 label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
-                # cpu ground truths
-                labels_cpu = labels.cpu().detach().numpy()
-                starts_cpu = start_idxs.cpu().detach().numpy()
-                ends_cpu = end_idxs.cpu().detach().numpy()
-                n_spans_cpu = n_spans.cpu().detach().numpy()
+               
                 # metrics 
                 labels_precision_recall = precision_recall_fscore_support(labels_cpu, label_preds, average = 'macro', zero_division=0)
                 # starts_f1 = f1_score(starts_cpu, start_preds, average = 'macro', zero_division=0)
@@ -181,6 +195,7 @@ def main():
                 elif args.level=='sentence':
                     print('F1 SENT', labels_f1)
                     print('SENT PREDS', np.nonzero(label_preds[0]), np.nonzero(labels[0]))
+                    # print('N SPANS PREDS', span_preds, torch.argmax(n_spans, dim=1))
                 else:
                     print('PREC/RECALL LABELS', labels_precision_recall)
                     print('START PREDS', np.nonzero(start_preds[0]), np.nonzero(start_idxs[0]))
@@ -237,7 +252,19 @@ def main():
                     tokens_true.extend(tokens_cpu.flatten())
 
                 elif args.level == 'sentence':
-                    label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
+                    # label_preds = torch.round(torch.sigmoid(label_logits).cpu().detach().numpy())
+                    sig_preds = torch.sigmoid(label_logits).cpu().detach().numpy()
+                    # select max index if threshold not met
+                    label_preds = (sig_preds > 0.5).astype(int) 
+                    max_indices = np.argmax(sig_preds, axis=1)
+                    meets_thresh = label_preds.sum(axis=1) > 0
+                    label_preds[~meets_thresh, max_indices[~meets_thresh]] = 1
+                    # num_spans =  [1 if i == 0 else i for i in torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()]
+                    # label_preds = np.zeros_like(label_preds)
+                    # for i in range(len(num_spans)):
+                    #     k = num_spans[i]
+                    #     top_k_idx = np.argsort(label_preds[i])[-k:] # sorts from smallest, so we start from the last k
+                    #     label_preds[i, top_k_idx] = 1
                     labels_cpu = labels.cpu().detach().numpy()
                     labels_pred.extend(label_preds)
                     labels_true.extend(labels_cpu)
@@ -249,8 +276,8 @@ def main():
                     labels_cpu = labels.cpu().detach().numpy()
                     starts_cpu = start_idxs.cpu().detach().numpy()
                     ends_cpu = end_idxs.cpu().detach().numpy()
-                    n_span_preds = torch.argmax(n_spans_logits, dim=1)  
-                    n_spans_cpu = n_spans.cpu().detach().numpy()
+                    n_span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
+                    n_spans_cpu = torch.argmax(n_spans, dim=1).cpu().detach().numpy()
 
                     labels_pred.extend(label_preds)
                     labels_true.extend(labels_cpu)
@@ -262,24 +289,64 @@ def main():
                     n_spans_true.extend(n_spans_cpu)
               
             if args.level == 'token':
-                print(classification_report(tokens_true, tokens_pred, zero_division=0))
-                report_dict = classification_report(tokens_true, tokens_pred, zero_division=0, output_dict=True)
+                report_dict = classification_report(tokens_true, tokens_pred, zero_division=0, labels=list(range(1, num_labels)), output_dict=True)
+                print(classification_report(tokens_true, tokens_pred, labels=list(range(1, num_labels)), zero_division=0))
             elif args.level == 'sentence':
                 # unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
-                print(classification_report(labels_true, labels_pred, zero_division=0))
                 report_dict = classification_report(labels_true, labels_pred, zero_division=0, output_dict=True)
+                print(classification_report(labels_true, labels_pred, zero_division=0))
+
+                # subset to single predictions without NO_ANNOTATION label for confusion matrix
+                labels_true = np.array(labels_true)
+                labels_pred = np.array(labels_pred)
+                ind_true = np.where(labels_true[labels_true[:, 40]!=1].sum(axis=1) == 1)[0]
+                ind_pred = np.where(labels_pred[labels_pred[:, 40]!=1].sum(axis=1) == 1)[0]
+                ind = np.intersect1d(ind_true, ind_pred)
+                y_true_sub = labels_true[ind, :]
+                y_pred_sub = labels_pred[ind, :]
+                # confusion matrix !! make a function 
+                conf = confusion_matrix(np.argmax(y_true_sub, axis=1), np.argmax(y_pred_sub, axis=1), labels = list(range(40)), normalize='all')
+                # np.save('confusion.npy', conf)
+                disp = ConfusionMatrixDisplay(confusion_matrix=conf)
+                disp.plot(cmap="gist_heat",  include_values=False)
+                disp.ax_.tick_params(labelsize=6)
+                label_names = list(d.keys())
+                label_names.remove('NO_ANNOTATION')
+                disp.ax_.set_xticklabels(label_names, rotation=90)
+                disp.ax_.set_yticklabels(label_names)
+                # disp.figure_.savefig(f'confusion_matrix_sentence_level_epoch{epoch}.png', bbox_inches='tight', dpi=300)
+                
             else:
                 unique_labels = list(set(np.where(np.array(labels_true)==1)[1]))
-                print(classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels))
+                starts_true = np.concatenate(starts_true)
+                ends_true = np.concatenate(ends_true)
+                starts_pred = np.concatenate(starts_pred).astype('int64')
+                ends_pred = np.concatenate(ends_pred).astype('int64')
+
+                f1_prec_recall_starts = precision_recall_fscore_support(starts_true, starts_pred, zero_division=0, average='macro')
+                f1_prec_recall_ends = precision_recall_fscore_support(ends_true, ends_pred, zero_division=0, average='macro')
+                f1_prec_recall_nspans = precision_recall_fscore_support(n_spans_true, n_spans_pred, zero_division=0,  average='macro')
+              
                 report_dict = classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels, output_dict=True)
+                report_dict['starts'] = f1_prec_recall_starts
+                report_dict['ends'] =  f1_prec_recall_ends 
+                report_dict['nspans'] = f1_prec_recall_nspans
+                
+                print('STARTS, ENDS, NSPANS', f1_prec_recall_starts, f1_prec_recall_ends, f1_prec_recall_nspans)
+                print(classification_report(labels_true, labels_pred, zero_division=0, labels=unique_labels))
+
             report_dict['args'] = {}
             for arg, value in vars(args).items():
                 report_dict['args'][arg] = value
-
             data_path = re.sub('.csv', '.json', args.path_sentence_df)
-            report_path = f'{base_dir}/time_{time}_epoch_{epoch}_data_{data_path}'
+            report_path = f'{base_dir}/{args.level}_time_{time}_epoch_{epoch}_data_{data_path}'
             with open(report_path, 'w') as f:
                 json.dump(report_dict, f)
+
+            # # save model 
+            # if epoch>3:
+            #     model_path = f"{args.level}_epoch_{epoch}_{date}.pt"
+            #     torch.save(model.state_dict(), model_path)
 
 if __name__ == "__main__":
     main()

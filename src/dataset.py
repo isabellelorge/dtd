@@ -98,6 +98,7 @@ def calculate_pos_weights(labels, num_labels, one_hot=True):
   pos_weights  = np.log((num_negatives+1)/(num_positives+1)) # avoid division by zero
   min_weight = min(pos_weights)
   pos_weights = pos_weights/min_weight
+  # pos_weights = (num_negatives+1)/(num_positives+1)
   return pos_weights
 
 

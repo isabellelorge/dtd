@@ -15,7 +15,7 @@ def create_label_dict():
     # create integers/labels dictionary
     targets_polar =([f'{t}_POSITIVE' for t in targets]+[f'{t}_NEGATIVE' for t in targets])
     targets_polar.append('NO_ANNOTATION')
-    d = {t: idx for idx, t in enumerate(targets_polar)}
+    d = {k:i for k,i in list(zip(targets_polar, list(range(1, len(targets_polar)+1))))}
     return d
 
 
@@ -101,6 +101,7 @@ def get_spans(sentence, regex, d):
 def create_missing_idxs(sentence_df):
   # after calculating metrics for each label, replace missing labels with 'NO_ANNOTATION' label
   # also add start = 0 and end = end of sentence
+  d = create_label_dict()
   new_labels = []
   new_start_idxs = []
   new_end_idxs = []
@@ -113,7 +114,7 @@ def create_missing_idxs(sentence_df):
     if e == []:
       e = [len(sentence)]
     if l == []:
-      l = [40]
+      l = [d['NO_ANNOTATION']]
     new_start_idxs.append(s)
     new_end_idxs.append(e)
     new_labels.append(l)
