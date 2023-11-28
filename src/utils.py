@@ -11,11 +11,14 @@ targets = ['older_age', 'family_member_mental_disorder', ':abuse', 'childhood_ab
            'physical_comorbidity', 'mental_comorbidity', 'substance_abuse', 'anhedonia', 'illness_early_onset',
            'multiple_antidepressants', 'antidepressant_dosage_increase', 'multiple_psychotherapies', 'side_effects', 'non_adherence']
 
-def create_label_dict():
+def create_label_dict(level='span'):
     # create integers/labels dictionary
     targets_polar =([f'{t}_POSITIVE' for t in targets]+[f'{t}_NEGATIVE' for t in targets])
     targets_polar.append('NO_ANNOTATION')
-    d = {k:i for k,i in list(zip(targets_polar, list(range(1, len(targets_polar)+1))))}
+    if level=='token':
+       d = {k:i for k,i in list(zip(targets_polar, list(range(1, len(targets_polar)+1))))}
+    else:
+       d = {k:i for k,i in list(zip(targets_polar, list(range(0, len(targets_polar)))))}
     return d
 
 

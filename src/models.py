@@ -122,7 +122,7 @@ class SpanClassifier(nn.Module):
           preds_ends = []
 
           for idx, n_spans in enumerate(all_n_spans): # better way than looping n of spans..? extracting indices of 0/1s..?
-            spans = full_seq_logits[idx]
+            spans = nn.functional.softmax(full_seq_logits[idx], dim=-1)
             starts = start_logits[idx]
             ends = end_logits[idx]
             labels_onehot = torch.zeros_like(spans)
@@ -156,26 +156,29 @@ class SpanClassifier(nn.Module):
                 # get relevant tokens for span classification
                 span_vector = tokens_rep[idx, start:end, :].mean(dim=0) 
                 span_vectors.append(span_vector)
-              # inference
-              preds_starts.append(starts_onehot)
-              preds_ends.append(ends_onehot)
+
 
               # label span vectors
               if span_vectors:
                 span_vecs = torch.stack(span_vectors) # create tensor 
-                multiple_span_logits = self.span_classifier(span_vecs) # to classify all vecs simultaneously
+                # this is just n_spans*labels because within each sample
+                multiple_span_logits = nn.functional.softmax(self.span_classifier(span_vecs), dim=1) # to classify all vecs simultaneously
                 # discrete predictions for inference 
                 span_labels = torch.argmax(multiple_span_logits, dim =1)  
                 labels_onehot.scatter_(0, span_labels, 1)
-                preds_labels.append(labels_onehot)
                 # TAKING THE MAX IS BEST OPTION (it gets the logit from where the span was correctly predicted if it was anywhere)
                 spans,_ = torch.max(multiple_span_logits, dim=0)  
               else:
-                print('NO VALID SPANS')
-                spans = torch.zeros(self.num_labels) # dummy probabilities for labels in case there are no valid spans
+                print('NO VALID SPANS', n_spans, top_n_starts, top_n_ends)
+                labels_onehot[torch.argmax(spans)] = 1
+                spans = torch.zeros(self.num_labels).to(input_ids.device) # dummy probabilities for labels in case there are no valid spans
+              
+              # inference
+              preds_starts.append(starts_onehot)
+              preds_ends.append(ends_onehot)
+              preds_labels.append(labels_onehot)
 
             all_span_logits.append(spans)  # this should be batch * labels
-
           label_logits = torch.stack(all_span_logits) # create tensor
           # discrete predictions for inference 
           preds_starts_tensor = torch.stack(preds_starts) 
@@ -189,15 +192,18 @@ def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
                    start_idxs, end_idxs, labels, tokens, n_spans,
                    label_pos_weights, n_spans_pos_weights, level, use_pos_weight):
   tokens = tokens.view(-1)
-  crit_starts = nn.BCEWithLogitsLoss()
-  crit_ends = nn.BCEWithLogitsLoss()
+  crit_starts = nn.BCEWithLogitsLoss(reduction='none')
+  crit_ends = nn.BCEWithLogitsLoss(reduction='none')
   crit_tokens = nn.CrossEntropyLoss()
-  crit_spans = nn.CrossEntropyLoss()
+  crit_spans = nn.CrossEntropyLoss(reduction='none')
   # crit_spans = nn.CrossEntropyLoss(weight=n_spans_pos_weights)
   if use_pos_weight == True:
-    crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
+    # crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
+    crit_labels = nn.BCELoss(reduction='none')
   else:
-     crit_labels = nn.BCEWithLogitsLoss()
+    # crit_labels = nn.BCEWithLogitsLoss()
+    crit_labels = nn.BCELoss()
+     
   if level == 'token':
     labels_loss = crit_tokens(label_logits, tokens)
     starts_loss = ends_loss = n_spans_loss = 0 # placeholders 
@@ -206,11 +212,16 @@ def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
     # n_spans_loss = crit_spans(n_spans_logits, n_spans.float())
     starts_loss = ends_loss = n_spans_loss = 0 # placeholders 
   else:
-    labels_loss = crit_labels(label_logits, labels.float()) # labels has size batch * labels
+    # implementing the weighted loss myself since cannot use logits loss
+    labels_loss = crit_labels(label_logits, labels.float())
+    labels_loss*=label_pos_weights # labels has size batch * labels
     starts_loss = crit_starts(start_logits, start_idxs.float()) # start_probs and end_probs have size batch * n_tokens
     ends_loss = crit_ends(end_logits, end_idxs.float())
     n_spans_loss = crit_spans(n_spans_logits, n_spans.float()) # n_spans has size batch * max_n_spans + 1
-
-  loss = starts_loss + ends_loss + labels_loss + n_spans_loss
-
+  loss = 0
+  # normalise losses 
+  for idx, l in enumerate([starts_loss, ends_loss, labels_loss, n_spans_loss]):
+    # l = l/l.mean()
+    loss+=l.mean()
+    
   return loss

@@ -32,7 +32,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dir_sentence_df', type=str, default = '/mnt/sdg/isabelle/dtd_project/data/annotations/span_level_annot/processed_sentences_labels', help='Path to df with sentences, start/ends and labels.')
     parser.add_argument('--path_sentence_df', type=str, help='Path to df with sentences, start/ends and labels.')
-    parser.add_argument('--n_epochs', type=int, default=10, help='Number of epochs.')
+    parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs.')
     parser.add_argument('--random_seed', type=int, default=1, help='Random seed.')
     parser.add_argument('--lr', type=float, default=3e-05, help='Learning rate.')
     parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate.')
@@ -54,7 +54,8 @@ def main():
     sentence_df['labels_unique'] = sentence_df['labels'].apply(lambda x: list(set(x)))
 
     # to avoid zeros clashing with masked tokens in token-level classification
-    sentence_df['labels_unique'] = sentence_df['labels_unique'].apply(lambda x: [i+1 for i in x])
+    if args.level=='token':
+        sentence_df['labels_unique'] = sentence_df['labels_unique'].apply(lambda x: [i+1 for i in x])
   
     df_train, df_val, df_test = create_train_val_test(sentence_df, bert_path='bert-base-cased')
     # df_train = df_train.iloc[:1000]
@@ -67,7 +68,8 @@ def main():
     os.environ['PYTHONHASHSEED'] = str(random_seed)
     torch.cuda.manual_seed(random_seed)
     torch.cuda.manual_seed_all(random_seed)
-    device = torch.device('cuda:2') if torch.cuda.is_available() else torch.device('cpu')
+    device = torch.device('cuda:1') if torch.cuda.is_available() else torch.device('cpu')
+    # device = torch.device('cpu')
 
     # datasets
     num_labels = len(set(list(chain.from_iterable(sentence_df['labels']))))
@@ -174,7 +176,8 @@ def main():
                 start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
                 end_preds = torch.round(torch.sigmoid(end_logits)).cpu().detach().numpy()
                 span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
-                label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
+                # label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
+                label_preds = torch.round(label_logits).cpu().detach().numpy()
                
                 # metrics 
                 labels_precision_recall = precision_recall_fscore_support(labels_cpu, label_preds, average = 'macro', zero_division=0)
@@ -200,6 +203,7 @@ def main():
                     print('PREC/RECALL LABELS', labels_precision_recall)
                     print('START PREDS', np.nonzero(start_preds[0]), np.nonzero(start_idxs[0]))
                     print('END PREDS', np.nonzero(end_preds[0]), np.nonzero(end_idxs[0]))
+                    # print('PROBS', label_logits[0], np.nonzero(labels[0]))
                     print('LABEL PREDS', np.nonzero(label_preds[0]), np.nonzero(labels[0]))
                     print('N SPANS PREDS', span_preds, torch.argmax(n_spans, dim=1))
 
