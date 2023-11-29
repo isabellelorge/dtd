@@ -1,1 +1,3 @@
-Identifying Difficult-to-Treat Depression
+# Identifying Difficult-to-Treat Depression using Synthetic Data and Span Extraction
+
+## The code in this repository can be used to train a model to extract spans from text and label them. It uses a custom Pytorch model which extracts multiple spans from sentences by predicting starts, ends and number of spans and applying a variant of Non-Maximum Suppression (NMS) to select the top non-overlapping predicted spans, then uses a separate classifier to label the spans and finally max pools the softmaxed probabilities for each span (at training time) or selects the argmax label for each predicted span (at inference time). We successfully used this code to train a model on synthetic annotated data for factors influencing likelihood of difficult-to-treat depression (DTD). 
