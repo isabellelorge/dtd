@@ -42,24 +42,34 @@ def main():
     parser.add_argument('--test', type=bool, default=False, help='Using test set.')
     parser.add_argument('--level', type=str, default='span', help='Sentence-level classification instead of span extraction.')
     parser.add_argument('--pos_weights', type=bool, default=False, help='Using weighted loss by class.')
+    parser.add_argument('--separate_polarity', type=bool, default=False, help='Separate classifier for polarity')
 
     args = parser.parse_args()
     df_path = f'{args.dir_sentence_df}/{args.path_sentence_df}'
     sentence_df = pd.read_csv(df_path)
-    sentence_df['start_idxs'] = sentence_df['start_idxs'].apply(lambda x: literal_eval(x))
-    sentence_df['end_idxs'] = sentence_df['end_idxs'].apply(lambda x: literal_eval(x))
-    sentence_df['spans'] = sentence_df['spans'].apply(lambda x: literal_eval(x))
-    sentence_df['labels'] = sentence_df['labels'].apply(lambda x: literal_eval(x))
+    for col in ['start_idxs', 'end_idxs', 'spans', 'labels' , 'merged_labels', 'polarity']:
+        sentence_df[col] = sentence_df[col].apply(lambda x: literal_eval(x))
     sentence_df = create_missing_idxs(sentence_df)
-    sentence_df['labels_unique'] = sentence_df['labels'].apply(lambda x: list(set(x)))
+    # sentence_df['labels_unique'] = sentence_df['labels'].apply(lambda x: list(set(x)))
 
+    if args.separate_polarity == True:
+        labels_col = 'merged_labels'
+    else:
+        labels_col = 'labels'
+    
     # to avoid zeros clashing with masked tokens in token-level classification
     if args.level=='token':
-        sentence_df['labels_unique'] = sentence_df['labels_unique'].apply(lambda x: [i+1 for i in x])
-  
-    df_train, df_val, df_test = create_train_val_test(sentence_df, bert_path='bert-base-cased')
-    # df_train = df_train.iloc[:1000]
+        sentence_df[labels_col] = sentence_df[labels_col].apply(lambda x: [i+1 for i in x])
 
+    df_train, df_val, df_test = create_train_val_test(sentence_df, bert_path='bert-base-cased', labels_col = labels_col)
+    # df_train = df_train.iloc[:5000]
+
+    # eval dataset 
+    if args.test == True:
+        df_eval = df_test
+    else:
+        df_eval = df_val
+   
     # set random seed and device
     random_seed = args.random_seed
     random.seed(random_seed)
@@ -72,12 +82,13 @@ def main():
     # device = torch.device('cpu')
 
     # datasets
-    num_labels = len(set(list(chain.from_iterable(sentence_df['labels']))))
+    num_labels = len(set(list(chain.from_iterable(sentence_df[labels_col]))))
     if args.level == 'token':
         num_labels+=1
     max_spans = sentence_df['n_spans'].max()+1
     train_dataset = BertDataset(df_train, args.bert_path, num_labels=num_labels, max_spans=max_spans)
-    eval_dataset = BertDataset(df_val, args.bert_path, num_labels=num_labels, max_spans=max_spans)
+
+    eval_dataset = BertDataset(df_eval, args.bert_path, num_labels=num_labels, max_spans=max_spans)
 
     # positive label weights for imbalanced labels
     label_pos_weights = calculate_pos_weights(df_train['labels'], num_labels=num_labels, one_hot=False)
@@ -95,7 +106,9 @@ def main():
     print('max number of spans:', max_spans)
     print('level:', args.level)
     print('pos_weight:', pos_weights)
+    print('separate polarity', args.separate_polarity)
     print('label pos weights', label_pos_weights)
+   
 
     label_pos_weights = torch.tensor(label_pos_weights).to(device)
     n_spans_pos_weights = torch.tensor(n_spans_pos_weights).to(device)
@@ -116,8 +129,8 @@ def main():
         print(f'Training epoch {epoch}')
         print(df_train['sentences'].head())
         print(f'train dataset length: {len(df_train)}')
-        print(df_val['sentences'].head())
-        print(f'test/validation dataset length: {len(df_val)}')
+        print(df_eval['sentences'].head())
+        print(f'test/validation dataset length: {len(df_eval)}')
 
         # load and batch train (! maybe balance batch instead of weighting loss?)
         train_text_dataloader = DataLoader(train_dataset, shuffle=True, batch_size=args.batch_size, collate_fn=collate)
@@ -132,7 +145,7 @@ def main():
         for text_batch in train_text_dataloader:
 
             # get batch data
-            labels, sents, sents_masks, sents_segs, start_idxs, end_idxs, labels_tokens, n_spans = text_batch
+            labels, sents, sents_masks, sents_segs, start_idxs, end_idxs, labels_tokens, n_spans, pol = text_batch
             labels = labels.to(device)
             sents = sents.to(device)
             sents_masks = sents_masks.to(device)
@@ -141,21 +154,21 @@ def main():
             end_idxs = end_idxs.to(device)
             labels_tokens = labels_tokens.to(device)
             n_spans = n_spans.to(device)
+            pol = pol.to(device)
 
             # zero grad
             optimizer.zero_grad()
 
             # run model
-            start_logits, end_logits, label_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs,
+            start_logits, end_logits, label_logits, n_spans_logits, pol_logits, preds_starts, preds_ends, preds_labels, ordered_preds = model(input_ids=sents, masks=sents_masks, segs=sents_segs,
                                                                                                                                )
   
             # current metrics
             loss = calculate_loss(start_logits=start_logits, end_logits=end_logits,
-                                label_logits=label_logits, n_spans_logits=n_spans_logits,
-                                start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, tokens=labels_tokens, n_spans=n_spans,
+                                label_logits=label_logits, n_spans_logits=n_spans_logits, pol_logits=pol_logits,
+                                start_idxs=start_idxs, end_idxs=end_idxs, labels=labels, tokens=labels_tokens, n_spans=n_spans, pol=pol, 
                                 label_pos_weights=label_pos_weights, n_spans_pos_weights=n_spans_pos_weights, 
-                                level=args.level,
-                                use_pos_weight=pos_weights)
+                                level=args.level)
             
             # cpu ground truths
             labels_cpu = labels.cpu().detach().numpy()
@@ -164,7 +177,7 @@ def main():
             n_spans_cpu = n_spans.cpu().detach().numpy()
 
             if args.level == 'token':
-                token_preds = torch.argmax(torch.nn.functional.softmax(label_logits, dim=1) , dim=1).cpu().detach().numpy()  # n tokens*classes
+                token_preds = torch.argmax(torch.nn.functional.softmax(label_logits, dim=1) , dim=1).cpu().detach().numpy()  # n tokens * classes
                 tokens_cpu = labels_tokens.cpu().detach().numpy()
                 tokens_f1  = f1_score(token_preds, tokens_cpu.flatten(), average = 'macro', zero_division=0)
             elif args.level == 'sentence':
@@ -178,6 +191,7 @@ def main():
                 span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
                 # label_preds = torch.round(torch.sigmoid(label_logits)).cpu().detach().numpy()
                 label_preds = torch.round(label_logits).cpu().detach().numpy()
+                pol_preds = torch.round(torch.sigmoid(pol_logits)).cpu().detach().numpy()
                
                 # metrics 
                 labels_precision_recall = precision_recall_fscore_support(labels_cpu, label_preds, average = 'macro', zero_division=0)
@@ -203,7 +217,7 @@ def main():
                     print('PREC/RECALL LABELS', labels_precision_recall)
                     print('START PREDS', np.nonzero(start_preds[0]), np.nonzero(start_idxs[0]))
                     print('END PREDS', np.nonzero(end_preds[0]), np.nonzero(end_idxs[0]))
-                    # print('PROBS', label_logits[0], np.nonzero(labels[0]))
+                    print('POL', np.nonzero(pol_preds[0]), np.nonzero(pol[0]))
                     print('LABEL PREDS', np.nonzero(label_preds[0]), np.nonzero(labels[0]))
                     print('N SPANS PREDS', span_preds, torch.argmax(n_spans, dim=1))
 
@@ -232,7 +246,7 @@ def main():
             # get validation data
             for text_batch in eval_text_dataloader:
                 # get batch data
-                labels, sents, sents_masks, sents_segs, start_idxs, end_idxs, labels_tokens, n_spans = text_batch
+                labels, sents, sents_masks, sents_segs, start_idxs, end_idxs, labels_tokens, n_spans, pol = text_batch
                 labels = labels.to(device)
                 sents = sents.to(device)
                 sents_masks = sents_masks.to(device)
@@ -241,9 +255,10 @@ def main():
                 end_idxs = end_idxs.to(device)
                 labels_tokens = labels_tokens.to(device)
                 n_spans = n_spans.to(device)
+                pol = pol.to(device)
 
                 # run model
-                start_logits, end_logits, label_logits, n_spans_logits, preds_starts, preds_ends, preds_labels = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
+                start_logits, end_logits, label_logits, n_spans_logits, pol_logits, preds_starts, preds_ends, preds_labels, ordered_preds = model(input_ids=sents, masks=sents_masks, segs=sents_segs)
 
                 # label_preds = torch.round(torch.sigmoid(span_logits)).cpu().detach().numpy() # original label preds (all)
                 # start_preds = torch.round(torch.sigmoid(start_logits)).cpu().detach().numpy()
@@ -263,12 +278,6 @@ def main():
                     max_indices = np.argmax(sig_preds, axis=1)
                     meets_thresh = label_preds.sum(axis=1) > 0
                     label_preds[~meets_thresh, max_indices[~meets_thresh]] = 1
-                    # num_spans =  [1 if i == 0 else i for i in torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()]
-                    # label_preds = np.zeros_like(label_preds)
-                    # for i in range(len(num_spans)):
-                    #     k = num_spans[i]
-                    #     top_k_idx = np.argsort(label_preds[i])[-k:] # sorts from smallest, so we start from the last k
-                    #     label_preds[i, top_k_idx] = 1
                     labels_cpu = labels.cpu().detach().numpy()
                     labels_pred.extend(label_preds)
                     labels_true.extend(labels_cpu)
@@ -282,6 +291,13 @@ def main():
                     ends_cpu = end_idxs.cpu().detach().numpy()
                     n_span_preds = torch.argmax(n_spans_logits, dim=1).cpu().detach().numpy()
                     n_spans_cpu = torch.argmax(n_spans, dim=1).cpu().detach().numpy()
+                    pol_preds = torch.round(torch.sigmoid(pol_logits)).cpu().detach().numpy()
+                    pol_cpu = pol.cpu().detach().numpy()
+
+                    if args.separate_polarity == True:
+                        # transform back into a 41 labels classification task for evaluation using bitwise masks, this should have shape batch * 41 
+                        label_preds = np.concatenate([(label_preds.astype(int)&~pol_preds.astype(int))[:, :-1], (label_preds.astype(int)&pol_preds.astype(int))], axis = 1)
+                        labels_cpu = np.concatenate([(labels_cpu.astype(int)&~pol_cpu.astype(int))[:, :-1], (labels_cpu.astype(int)&pol_cpu.astype(int))], axis=1)
 
                     labels_pred.extend(label_preds)
                     labels_true.extend(labels_cpu)
@@ -347,10 +363,10 @@ def main():
             with open(report_path, 'w') as f:
                 json.dump(report_dict, f)
 
-            # # save model 
-            # if epoch>3:
-            #     model_path = f"{args.level}_epoch_{epoch}_{date}.pt"
-            #     torch.save(model.state_dict(), model_path)
+            # save model 
+            if epoch==4:
+                model_path = f"{args.level}_epoch_{epoch}_{date}.pt"
+                torch.save(model.state_dict(), model_path)
 
 if __name__ == "__main__":
     main()

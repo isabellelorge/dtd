@@ -47,6 +47,7 @@ def get_top_spans_nongreedy(starts, ends, n_spans):
     n_spans_copy = n_spans.clone()
     v_s, i_s = torch.topk(torch.sigmoid(starts), k=n_spans_copy)
     v_e, i_e = torch.topk(torch.sigmoid(ends), k=n_spans_copy)
+    print(i_s, i_e)
     top_starts_sorted, top_starts_idxs = torch.sort(i_s)
     top_ends_sorted, top_ends_idxs = torch.sort(i_e)
     top_starts = []
@@ -84,6 +85,8 @@ class SpanClassifier(nn.Module):
         self.span_number_classifier = nn.Linear(768, max_spans+1)
         # classifier to predict span label
         self.span_classifier = nn.Linear(768, num_labels)
+        # classifier to predict negative polarity (concatenating predicted labels to BERT sequence output)
+        self.neg_pol_classifier = nn.Linear(768 + num_labels, num_labels)
         # dropout
         self.dropout = nn.Dropout(p=dropout_rate)
         # num labels
@@ -96,19 +99,19 @@ class SpanClassifier(nn.Module):
     def forward(self, input_ids, masks, segs):
         # batch * tokens * dim => batch * tokens
         outputs = self.bert(input_ids, attention_mask=masks, token_type_ids=segs)
-        tokens_rep = self.dropout(outputs.last_hidden_state) # each token
+        tokens_rep = self.dropout(outputs.last_hidden_state) # each token (remove SEP..?)
         seq_rep = self.dropout(outputs.pooler_output) # full sentence/sequence
         full_seq_logits = self.span_classifier(seq_rep)
        
         # token-level classifier
         if self.level == 'token':
           label_logits = self.token_classifier(tokens_rep).view(-1, self.num_labels)
-          start_logits = end_logits = n_spans_logits = preds_starts_tensor = preds_ends_tensor = preds_labels_tensor = torch.tensor(0) # placeholders
+          start_logits = end_logits = n_spans_logits = pol_logits = preds_starts_tensor = preds_ends_tensor = preds_labels_tensor = torch.tensor(0) # placeholders
         # sentence-level classifier 
         elif self.level == 'sentence':
           label_logits = full_seq_logits
           # n_spans_logits = self.span_number_classifier(seq_rep)
-          n_spans_logits = start_logits = end_logits = preds_starts_tensor = preds_ends_tensor = preds_labels_tensor = torch.tensor(0) # placeholders
+          start_logits = end_logits =  n_spans_logits = pol_logits = preds_starts_tensor = preds_ends_tensor = preds_labels_tensor = torch.tensor(0) # placeholders
         # span-level classifier 
         else:
           all_span_logits = [] 
@@ -120,23 +123,30 @@ class SpanClassifier(nn.Module):
           preds_labels = []
           preds_starts = []
           preds_ends = []
+          all_ordered_preds = []
 
           for idx, n_spans in enumerate(all_n_spans): # better way than looping n of spans..? extracting indices of 0/1s..?
+            print(n_spans)
             spans = nn.functional.softmax(full_seq_logits[idx], dim=-1)
             starts = start_logits[idx]
             ends = end_logits[idx]
             labels_onehot = torch.zeros_like(spans)
             starts_onehot = torch.zeros_like(starts)
-            ends_onehot = torch.zeros_like(ends) 
+            ends_onehot = torch.zeros_like(ends)
+            ordered_preds = []
 
             if n_spans <=1: # if unique label, classify full sentence
               # Create one-hot encoding to get discrete labels for inference
-              labels_onehot[torch.argmax(spans)] = 1
-              starts_onehot[torch.argmax(starts)] = 1
-              ends_onehot[torch.argmax(ends)] = 1
+              label = torch.argmax(spans)
+              start = torch.argmax(starts)
+              end = torch.argmax(ends)
+              labels_onehot[label] = 1
+              starts_onehot[start] = 1
+              ends_onehot[end] = 1
               preds_labels.append(labels_onehot)
               preds_starts.append(starts_onehot)
               preds_ends.append(ends_onehot)
+              ordered_preds.append((start, end, label))
 
             else:
               # we transform the variable 'spans' to replace full seq
@@ -154,7 +164,9 @@ class SpanClassifier(nn.Module):
                 starts_onehot[start] = 1
                 ends_onehot[end] = 1
                 # get relevant tokens for span classification
-                span_vector = tokens_rep[idx, start:end, :].mean(dim=0) 
+                span_vector = tokens_rep[idx, start:end+1, :].mean(dim=0)
+                label = torch.argmax(nn.functional.softmax(self.span_classifier(span_vector.unsqueeze(0)), dim=1))
+                ordered_preds.append((start, end, label))
                 span_vectors.append(span_vector)
 
 
@@ -179,38 +191,41 @@ class SpanClassifier(nn.Module):
               preds_labels.append(labels_onehot)
 
             all_span_logits.append(spans)  # this should be batch * labels
+            all_ordered_preds.append(ordered_preds)
+
           label_logits = torch.stack(all_span_logits) # create tensor
+          # polarity
+          pol_logits = self.neg_pol_classifier(torch.concat([seq_rep, label_logits], dim = 1)) # should be batch size * seq dim + num labels
           # discrete predictions for inference 
           preds_starts_tensor = torch.stack(preds_starts) 
           preds_ends_tensor = torch.stack(preds_ends) 
           preds_labels_tensor = torch.stack(preds_labels)
         
-        return start_logits, end_logits, label_logits, n_spans_logits, preds_starts_tensor, preds_ends_tensor, preds_labels_tensor
+        return start_logits, end_logits, label_logits, n_spans_logits, pol_logits, preds_starts_tensor, preds_ends_tensor, preds_labels_tensor, all_ordered_preds
 
 
 def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
-                   start_idxs, end_idxs, labels, tokens, n_spans,
-                   label_pos_weights, n_spans_pos_weights, level, use_pos_weight):
+                   pol_logits,
+                   start_idxs, end_idxs, labels, tokens, n_spans, pol,
+                   label_pos_weights, n_spans_pos_weights, level):
   tokens = tokens.view(-1)
-  crit_starts = nn.BCEWithLogitsLoss(reduction='none')
-  crit_ends = nn.BCEWithLogitsLoss(reduction='none')
+  crit_starts = nn.BCEWithLogitsLoss()
+  crit_ends = nn.BCEWithLogitsLoss()
   crit_tokens = nn.CrossEntropyLoss()
-  crit_spans = nn.CrossEntropyLoss(reduction='none')
+  crit_spans = nn.CrossEntropyLoss()
+  crit_pol = nn.BCEWithLogitsLoss()
   # crit_spans = nn.CrossEntropyLoss(weight=n_spans_pos_weights)
-  if use_pos_weight == True:
-    # crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
-    crit_labels = nn.BCELoss(reduction='none')
-  else:
-    # crit_labels = nn.BCEWithLogitsLoss()
-    crit_labels = nn.BCELoss()
+  # crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
+  crit_labels = nn.BCELoss(reduction='none')
      
   if level == 'token':
     labels_loss = crit_tokens(label_logits, tokens)
-    starts_loss = ends_loss = n_spans_loss = 0 # placeholders 
+    starts_loss = ends_loss = n_spans_loss = pol_loss = 0 # placeholders 
   elif level == 'sentence':
+    crit_labels = nn.BCEWithLogitsLoss()
     labels_loss = crit_labels(label_logits, labels.float())
     # n_spans_loss = crit_spans(n_spans_logits, n_spans.float())
-    starts_loss = ends_loss = n_spans_loss = 0 # placeholders 
+    starts_loss = ends_loss = n_spans_loss = pol_loss = 0 # placeholders 
   else:
     # implementing the weighted loss myself since cannot use logits loss
     labels_loss = crit_labels(label_logits, labels.float())
@@ -218,10 +233,8 @@ def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
     starts_loss = crit_starts(start_logits, start_idxs.float()) # start_probs and end_probs have size batch * n_tokens
     ends_loss = crit_ends(end_logits, end_idxs.float())
     n_spans_loss = crit_spans(n_spans_logits, n_spans.float()) # n_spans has size batch * max_n_spans + 1
-  loss = 0
-  # normalise losses 
-  for idx, l in enumerate([starts_loss, ends_loss, labels_loss, n_spans_loss]):
-    # l = l/l.mean()
-    loss+=l.mean()
+    pol_loss = crit_pol(pol_logits, pol.float())
+
+  loss = starts_loss + ends_loss + labels_loss.mean() + n_spans_loss + pol_loss 
     
   return loss

@@ -73,14 +73,14 @@ def get_label(label_text, regex, d):
     return l
 
 
-def get_spans(sentence, regex, d):
+def get_spans(sentence, d):
   # divide sentences into spans, get start/ends and labels 
   start_idxs = []
   end_idxs = []
   spans_text = []
   labels = []
   start = 0
-
+  regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
   # clean sentence
   clean_sentence = re.sub(regex, '', sentence).strip()
   clean_sentence = re.sub(r'\s{2,}', ' ', clean_sentence)
@@ -100,6 +100,7 @@ def get_spans(sentence, regex, d):
       end_idxs.append(clean_idxs[1])
 
   return labels, spans_text, clean_sentence, start_idxs, end_idxs
+
 
 def create_missing_idxs(sentence_df):
   # after calculating metrics for each label, replace missing labels with 'NO_ANNOTATION' label
@@ -130,7 +131,6 @@ def get_sentences_labels(annot_df):
   # wrapper function to preprocess raw labelled notes dataset into sentences with start/end of spans and labels
   d = create_label_dict()
   annot_df = process_annot_df(annot_df)
-  regex = re.compile('\[.*?\(.*?TIVE\).*?\].?')
   sentence_df = pd.DataFrame()
   ids = []
   all_labels = []
@@ -148,7 +148,7 @@ def get_sentences_labels(annot_df):
     for sentence in sents:
       orig_sentences.append(sentence)
       ids.append(idx)
-      labels, spans_text, clean_sentence, start_idxs, end_idxs = get_spans(sentence, regex, d)
+      labels, spans_text, clean_sentence, start_idxs, end_idxs = get_spans(sentence, d)
       # print(labels, start_idxs, end_idxs, spans_text, clean_sentence, repr(sentence))
       all_labels.append(labels)
       sentences.append(clean_sentence)
