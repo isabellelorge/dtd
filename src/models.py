@@ -47,7 +47,6 @@ def get_top_spans_nongreedy(starts, ends, n_spans):
     n_spans_copy = n_spans.clone()
     v_s, i_s = torch.topk(torch.sigmoid(starts), k=n_spans_copy)
     v_e, i_e = torch.topk(torch.sigmoid(ends), k=n_spans_copy)
-    print(i_s, i_e)
     top_starts_sorted, top_starts_idxs = torch.sort(i_s)
     top_ends_sorted, top_ends_idxs = torch.sort(i_e)
     top_starts = []
@@ -126,7 +125,6 @@ class SpanClassifier(nn.Module):
           all_ordered_preds = []
 
           for idx, n_spans in enumerate(all_n_spans): # better way than looping n of spans..? extracting indices of 0/1s..?
-            print(n_spans)
             spans = nn.functional.softmax(full_seq_logits[idx], dim=-1)
             starts = start_logits[idx]
             ends = end_logits[idx]

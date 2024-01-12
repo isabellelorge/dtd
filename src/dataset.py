@@ -150,5 +150,14 @@ def create_train_val_test(df_sentences, bert_path, labels_col):
                 columns=columns)
   df_test = pd.DataFrame(list(zip(X_test, y_test, starts_test, ends_test, spans_test, polarity_test)),
                 columns=columns)
+  counter_val = 0
+  counter_test = 0
+  for s in df_train['sentences']:
+    if s in df_val['sentences']:
+        counter==1
+    if s in df_test['sentences']:
+        counter+=1
+  print('n duplicates in train and val:', counter_val)
+  print('n duplicates in train and test:', counter_test)
 
   return df_train, df_val, df_test

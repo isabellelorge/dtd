@@ -30,32 +30,39 @@ def main():
 
     # Read arguments
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dir_sentence_df', type=str, default = '/mnt/sdg/isabelle/dtd_project/data/annotations/span_level_annot/processed_sentences_labels', help='Path to df with sentences, start/ends and labels.')
+    parser.add_argument('--dir_sentence_df', type=str, default = '/mnt/sdg/isabelle/dtd_project/data/annotations/span_level_annot/processed_sentences_labels', help='Path to df directory.')
     parser.add_argument('--path_sentence_df', type=str, help='Path to df with sentences, start/ends and labels.')
     parser.add_argument('--n_epochs', type=int, default=20, help='Number of epochs.')
     parser.add_argument('--random_seed', type=int, default=1, help='Random seed.')
     parser.add_argument('--lr', type=float, default=3e-05, help='Learning rate.')
-    parser.add_argument('--dropout_rate', type=float, default=0.1, help='Dropout rate.')
+    parser.add_argument('--dropout_rate', type=float, default=0.5, help='Dropout rate.')
     parser.add_argument('--weight_decay', type=float, default=0.001, help='Weight decay.')
     parser.add_argument('--batch_size', type=int, default=16, help='Batch size.')
-    parser.add_argument('--bert_path', type=str, default='bert-base-cased', help='Bert path to use.')
+    parser.add_argument('--bert_path', type=str, default='bert-base-uncased', help='Bert path to use.')
     parser.add_argument('--test', type=bool, default=False, help='Using test set.')
     parser.add_argument('--level', type=str, default='span', help='Sentence-level classification instead of span extraction.')
     parser.add_argument('--pos_weights', type=bool, default=False, help='Using weighted loss by class.')
     parser.add_argument('--separate_polarity', type=bool, default=False, help='Separate classifier for polarity')
+    parser.add_argument('--labels_column', type=str, default='labels', help='which label column to use (labels or merged_labels).')
 
     args = parser.parse_args()
     df_path = f'{args.dir_sentence_df}/{args.path_sentence_df}'
     sentence_df = pd.read_csv(df_path)
-    for col in ['start_idxs', 'end_idxs', 'spans', 'labels' , 'merged_labels', 'polarity']:
+   
+
+    for col in ['start_idxs', 'end_idxs', 'spans', 'labels' , 'merged_labels', 'polarity', 'all_neg_no_annot']:
         sentence_df[col] = sentence_df[col].apply(lambda x: literal_eval(x))
+    # to use only positive labels
+    sentence_df = sentence_df[sentence_df['no_neg']==1].reset_index(drop=True)
+
     sentence_df = create_missing_idxs(sentence_df)
     # sentence_df['labels_unique'] = sentence_df['labels'].apply(lambda x: list(set(x)))
 
-    if args.separate_polarity == True:
-        labels_col = 'merged_labels'
-    else:
-        labels_col = 'labels'
+    # if args.separate_polarity == True:
+    #     labels_col = 'merged_labels'
+    # else:
+    #     labels_col = 'labels'
+    labels_col = args.labels_column
     
     # to avoid zeros clashing with masked tokens in token-level classification
     if args.level=='token':
@@ -82,7 +89,8 @@ def main():
     # device = torch.device('cpu')
 
     # datasets
-    num_labels = len(set(list(chain.from_iterable(sentence_df[labels_col]))))
+    # num_labels = len(set(list(chain.from_iterable(sentence_df[labels_col]))))
+    num_labels = max(sentence_df[labels_col])
     if args.level == 'token':
         num_labels+=1
     max_spans = sentence_df['n_spans'].max()+1
@@ -93,10 +101,11 @@ def main():
     # positive label weights for imbalanced labels
     label_pos_weights = calculate_pos_weights(df_train['labels'], num_labels=num_labels, one_hot=False)
     n_spans_pos_weights = calculate_pos_weights(df_train['n_spans'], num_labels=max_spans, one_hot=False)
-    if args.level == 'sentence':
-        pos_weights = args.pos_weights
-    else:
-        pos_weights = True 
+    # if args.level == 'sentence':
+    #     pos_weights = args.pos_weights
+    # else:
+    #     pos_weights = True 
+    pos_weights = args.pos_weights
 
     # print info 
     print('seed:', random_seed)
@@ -108,6 +117,7 @@ def main():
     print('pos_weight:', pos_weights)
     print('separate polarity', args.separate_polarity)
     print('label pos weights', label_pos_weights)
+    print('labels column', args.labels_column)
    
 
     label_pos_weights = torch.tensor(label_pos_weights).to(device)
@@ -364,9 +374,9 @@ def main():
                 json.dump(report_dict, f)
 
             # save model 
-            if epoch==4:
-                model_path = f"{args.level}_epoch_{epoch}_{date}.pt"
-                torch.save(model.state_dict(), model_path)
+            # if epoch==4:
+            model_path = f"models_{args.labels_column}/{args.level}_epoch_{epoch}_{date}.pt"
+            torch.save(model.state_dict(), model_path)
 
 if __name__ == "__main__":
     main()
