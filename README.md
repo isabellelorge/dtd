@@ -69,7 +69,9 @@ Once you have trained the model, you can use it in the following way:
             return output
 
     sentence = '''
-    XXXXX has been inpatient twice for mental health treatment due to severity of illness with recurrent episodes of major depressive disorder occurring approximately every 3-4 months.
+    XXXXX has been inpatient twice for mental health treatment due to severity 
+    of illness with recurrent episodes of major 
+    depressive disorder occurring approximately every 3-4 months.
     '''
     print(get_preds(sentence))
 
