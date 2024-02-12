@@ -63,8 +63,7 @@ Once you have trained the model, you can use it in the following way:
                 end_idxs = encoded_input['offset_mapping'][0][:,1]
                 char_start = start_idxs[start_token]
                 char_end = end_idxs[end_token-1]
-                output['spans'].append({'start':int(char_start), 'end':int(char_end),
-                                    'label': (int(i[2]), rev_d[int(i[2])])})
+                output['spans'].append({'start':int(char_start), 'end':int(char_end), 'label': rev_d[int(i[2])], 'confidence': float(i[3])})
             return output
 
     sentence = 'XXXXX has been inpatient twice for mental health treatment due to severity of illness with recurrent episodes of major depressive disorder occurring approximately every 3-4 months.'
