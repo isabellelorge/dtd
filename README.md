@@ -53,7 +53,8 @@ Once you have trained the model, you can use it in the following way:
         masks = encoded_input['attention_mask']
         segs = encoded_input['token_type_ids']
 
-        start_logits, end_logits, label_logits, n_spans_logits, pol_logits, preds_starts, preds_ends, preds_labels, ordered_preds = model(input_ids = input_ids, masks=masks, segs=segs)
+        start_logits, end_logits, label_logits, n_spans_logits, pol_logits, 
+        preds_starts, preds_ends, preds_labels, ordered_preds = model(input_ids = input_ids, masks=masks, segs=segs)
         output = {'text': sent, 'spans': []}
         for pred in ordered_preds:
             for i in pred:
@@ -63,11 +64,13 @@ Once you have trained the model, you can use it in the following way:
                 end_idxs = encoded_input['offset_mapping'][0][:,1]
                 char_start = start_idxs[start_token]
                 char_end = end_idxs[end_token-1]
-                output['spans'].append({'start':int(char_start), 'end':int(char_end), 'label': rev_d[int(i[2])], 'confidence': float(i[3])})
+                output['spans'].append({'start':int(char_start), 'end':int(char_end), 
+                'label': rev_d[int(i[2])], 'confidence': float(i[3])})
             return output
 
-    sentence = 'XXXXX has been inpatient twice for mental health treatment due to severity of illness with recurrent episodes of major depressive disorder occurring approximately every 3-4 months.'
-
+    sentence = '''
+    XXXXX has been inpatient twice for mental health treatment due to severity of illness with recurrent episodes of major depressive disorder occurring approximately every 3-4 months.
+    '''
     print(get_preds(sentence))
 
 This will output a dictionary with keys `text` and `spans`. The latter is a list of extracted spans with start, end, label and confidence values. For `family_member_mental_disorder`, we recommend a threshold of 0.8 confidence for good performance (i.e., only extracting spans above 0.8 confidence). 
