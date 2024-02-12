@@ -11,14 +11,14 @@ def overlaps(start, selected_starts, selected_ends):
 
 
 def get_top_spans(start_probs, end_probs, n_spans):
-  # Create joint probabilities matrix 
+  # create joint probabilities matrix 
   joint_probs = start_probs[:, None] * end_probs[None, :]
 
-  # Mask out invalid locations (where end before start, ie lower triangle)
+  # mask out invalid locations (where end before start, ie lower triangle)
   mask = torch.tril(torch.ones_like(joint_probs)) == 0
   joint_probs = joint_probs * mask
 
-  # Greedily select top non-overlapping spans
+  # greedily select top non-overlapping spans
   selected_starts, selected_ends = [], []
 
   while len(selected_starts) < n_spans:
@@ -44,6 +44,7 @@ def get_top_spans(start_probs, end_probs, n_spans):
 
 
 def get_top_spans_nongreedy(starts, ends, n_spans):
+    # non-greedy version to avoid always selecting start-end of sentence if combined confidence is highest
     n_spans_copy = n_spans.clone()
     v_s, i_s = torch.topk(torch.sigmoid(starts), k=n_spans_copy)
     v_e, i_e = torch.topk(torch.sigmoid(ends), k=n_spans_copy)
@@ -98,7 +99,7 @@ class SpanClassifier(nn.Module):
     def forward(self, input_ids, masks, segs):
         # batch * tokens * dim => batch * tokens
         outputs = self.bert(input_ids, attention_mask=masks, token_type_ids=segs)
-        tokens_rep = self.dropout(outputs.last_hidden_state) # each token (remove SEP..?)
+        tokens_rep = self.dropout(outputs.last_hidden_state) # each token
         seq_rep = self.dropout(outputs.pooler_output) # full sentence/sequence
         full_seq_logits = self.span_classifier(seq_rep)
        
@@ -124,7 +125,7 @@ class SpanClassifier(nn.Module):
           preds_ends = []
           all_ordered_preds = []
 
-          for idx, n_spans in enumerate(all_n_spans): # better way than looping n of spans..? extracting indices of 0/1s..?
+          for idx, n_spans in enumerate(all_n_spans): # looping all predicted span numbers
             spans = nn.functional.softmax(full_seq_logits[idx], dim=-1)
             starts = start_logits[idx]
             ends = end_logits[idx]
@@ -136,6 +137,7 @@ class SpanClassifier(nn.Module):
             if n_spans <=1: # if unique label, classify full sentence
               # Create one-hot encoding to get discrete labels for inference
               label = torch.argmax(spans)
+              confidence = torch.max(spans)
               start = torch.argmax(starts)
               end = torch.argmax(ends)
               labels_onehot[label] = 1
@@ -144,39 +146,33 @@ class SpanClassifier(nn.Module):
               preds_labels.append(labels_onehot)
               preds_starts.append(starts_onehot)
               preds_ends.append(ends_onehot)
-              ordered_preds.append((start, end, label))
+              ordered_preds.append((start, end, label, confidence))
 
-            else:
-              # we transform the variable 'spans' to replace full seq
-              top_n_starts, top_n_ends = get_top_spans_nongreedy(starts, ends, n_spans)
-              # if n_spans < 4:
-              #   print('TRUE', torch.nonzero(start_idxs[idx]), torch.nonzero(end_idxs[idx]), torch.argmax(true_n_spans[idx]))
-              #   print('PAIRS', list(zip(top_n_starts, top_n_ends)))
-              #   if len(top_n_starts) < n_spans:
-              #     print('NOT ENOUGH VALID SPANS')
-
+            else: # if more than one span predicted in sentence
+              top_n_starts, top_n_ends = get_top_spans_nongreedy(starts, ends, n_spans) # get top start/end pairs in order of confidence
               span_vectors = [] # get span vectors 
               for i, start in enumerate(top_n_starts):
-                # discrete predictions for inference
+                # discrete start/end predictions for inference
                 end = top_n_ends[i]
                 starts_onehot[start] = 1
                 ends_onehot[end] = 1
                 # get relevant tokens for span classification
                 span_vector = tokens_rep[idx, start:end+1, :].mean(dim=0)
-                label = torch.argmax(nn.functional.softmax(self.span_classifier(span_vector.unsqueeze(0)), dim=1))
-                ordered_preds.append((start, end, label))
+                soft = nn.functional.softmax(self.span_classifier(span_vector.unsqueeze(0)), dim=1)
+                confidence = torch.max(soft)
+                label = torch.argmax(soft)
+                ordered_preds.append((start, end, label, confidence))
                 span_vectors.append(span_vector)
-
 
               # label span vectors
               if span_vectors:
                 span_vecs = torch.stack(span_vectors) # create tensor 
                 # this is just n_spans*labels because within each sample
                 multiple_span_logits = nn.functional.softmax(self.span_classifier(span_vecs), dim=1) # to classify all vecs simultaneously
-                # discrete predictions for inference 
+                # discrete label predictions for inference 
                 span_labels = torch.argmax(multiple_span_logits, dim =1)  
                 labels_onehot.scatter_(0, span_labels, 1)
-                # TAKING THE MAX IS BEST OPTION (it gets the logit from where the span was correctly predicted if it was anywhere)
+                # max pooling 
                 spans,_ = torch.max(multiple_span_logits, dim=0)  
               else:
                 print('NO VALID SPANS', n_spans, top_n_starts, top_n_ends)
@@ -212,8 +208,6 @@ def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
   crit_tokens = nn.CrossEntropyLoss()
   crit_spans = nn.CrossEntropyLoss()
   crit_pol = nn.BCEWithLogitsLoss()
-  # crit_spans = nn.CrossEntropyLoss(weight=n_spans_pos_weights)
-  # crit_labels = nn.BCEWithLogitsLoss(pos_weight=label_pos_weights)
   crit_labels = nn.BCELoss(reduction='none')
      
   if level == 'token':
@@ -222,7 +216,6 @@ def calculate_loss(start_logits, end_logits, label_logits, n_spans_logits,
   elif level == 'sentence':
     crit_labels = nn.BCEWithLogitsLoss()
     labels_loss = crit_labels(label_logits, labels.float())
-    # n_spans_loss = crit_spans(n_spans_logits, n_spans.float())
     starts_loss = ends_loss = n_spans_loss = pol_loss = 0 # placeholders 
   else:
     # implementing the weighted loss myself since cannot use logits loss

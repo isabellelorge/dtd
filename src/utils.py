@@ -6,7 +6,7 @@ from ast import literal_eval
 
 nlp = spacy.load("en_core_web_sm")
 
-targets = ['older_age', 'family_member_mental_disorder', ':abuse', 'childhood_abuse', 'long_illness_duration', 'severe_illness',
+targets = ['older_age', 'family_member_mental_disorder', ':abuse', 'trauma_abuse', 'long_illness_duration', 'severe_illness',
            'suicidality', 'multiple_hospitalizations', 'recurrent_episodes', 'improvement',
            'physical_comorbidity', 'mental_comorbidity', 'substance_abuse', 'anhedonia', 'illness_early_onset',
            'multiple_antidepressants', 'antidepressant_dosage_increase', 'multiple_psychotherapies', 'side_effects', 'non_adherence']
@@ -188,6 +188,7 @@ def count_labels(sentence_df):
 
 
 def create_merged_labels_dict():
+    # for attempt at using separate classifier for label and polarity
     d = create_label_dict()
     merged_labels = {}
     seen_values = set()
@@ -212,6 +213,7 @@ def create_merged_labels_dict():
 
 
 def get_merged_label(l, merged_labels):
+    # for attempt at using separate classifier for label and polarity
     d = create_label_dict()
     no_annot = [d[i] for i in d if i == 'NO_ANNOTATION'][0]
     k = set(list(merged_labels.keys()))

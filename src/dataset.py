@@ -53,6 +53,7 @@ class BertDataset(Dataset):
 
 
 def get_token_idxs_from_char_idxs(char_idxs, offsets):
+  # get idxs of BERT tokens from character indexes
   if char_idxs[0]==0 and offsets[1][0]!=0: # when the char range of first word does not start at 0,
     char_idxs[0] = offsets[1][0] # set start_idx on first char of first word in sentence
   mask = [idx for idx, i in enumerate(offsets) if i[1] !=0 and bool(set(char_idxs) & set(range(i[0], i[1]+1)))]
@@ -62,6 +63,7 @@ def get_token_idxs_from_char_idxs(char_idxs, offsets):
 
 
 def collate(batch):
+  # collating batche
   batch_size = len(batch)
   labels = torch.stack([l for l,_,_,_,_,_,_ in batch])
   ids = [i for _,i,_,_,_,_,_ in batch]
@@ -110,6 +112,7 @@ def calculate_pos_weights(labels, num_labels, one_hot=True):
 
 
 def create_train_val_test(df_sentences, bert_path, labels_col):
+  # create training, validation and test sets
   tok = AutoTokenizer.from_pretrained(bert_path)
   df_sentences['token_ids'] = df_sentences['sentences'].apply(lambda x: tok.encode(x)) # this modified original df but following doesn't
   df_sentences = df_sentences[(df_sentences['token_ids'].str.len() > 3) & (df_sentences['token_ids'].str.len() < 512)] # to remove empty strings and \n\n and above max tokens
@@ -157,7 +160,7 @@ def create_train_val_test(df_sentences, bert_path, labels_col):
         counter==1
     if s in df_test['sentences']:
         counter+=1
-  print('n duplicates in train and val:', counter_val)
-  print('n duplicates in train and test:', counter_test)
+  # print('n duplicates in train and val:', counter_val)
+  # print('n duplicates in train and test:', counter_test)
 
   return df_train, df_val, df_test
