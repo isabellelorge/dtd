@@ -1,6 +1,8 @@
 # Detecting the Clinical Features of Difficult-to-Treat Depression using Synthetic Data from Large Language Models.
 The code in this repository can be used to train a model to extract spans for psychiatric clinical features from text and label them. It uses a custom Pytorch model which extracts multiple spans from sentences by predicting starts, ends and number of spans and applying a variant of Non-Maximum Suppression (NMS) to select the top non-overlapping predicted spans, then uses a separate classifier to label the spans and finally max pools the softmaxed probabilities for each span (at training time) or selects the argmax label for each predicted span (at inference time). We successfully used this code to train a model on synthetic annotated clinical notes for factors influencing likelihood of difficult-to-treat depression (DTD). 
 
+The code and dataset are described in our preprint paper at http://arxiv.org/abs/2402.07645
+
 
 ![Alt text](model_arch.png "Model architecture")
 
@@ -76,3 +78,15 @@ Once you have trained the model, you can use it in the following way:
     print(get_preds(sentence))
 
 This will output a dictionary with keys `text` and `spans`. The latter is a list of extracted spans with start, end, label and confidence values. For `family_member_mental_disorder`, we recommend a threshold of 0.8 confidence for good performance (i.e., only extracting spans above 0.8 confidence). 
+
+# Citation
+
+If you use the code in this paper, please use the following citation:
+
+    @misc{lorge2024detecting,
+      title={Detecting the Clinical Features of Difficult-to-Treat     Depression using Synthetic Data from Large Language Models}, 
+      author={Isabelle Lorge and Dan W. Joyce and Niall Taylor and Alejo Nevado-Holgado and Andrea Cipriani and Andrey Kormilitzin},
+      year={2024},
+      eprint={2402.07645},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL}}
