@@ -83,10 +83,16 @@ This will output a dictionary with keys `text` and `spans`. The latter is a list
 
 If you use the code in this paper, please use the following citation:
 
-    @misc{lorge2024detecting,
-      title={Detecting the Clinical Features of Difficult-to-Treat     Depression using Synthetic Data from Large Language Models}, 
-      author={Isabelle Lorge and Dan W. Joyce and Niall Taylor and Alejo Nevado-Holgado and Andrea Cipriani and Andrey Kormilitzin},
-      year={2024},
-      eprint={2402.07645},
-      archivePrefix={arXiv},
-      primaryClass={cs.CL}}
+  @article{LORGE2025110246,
+title = {Detecting the clinical features of difficult-to-treat depression using synthetic data from large language models},
+journal = {Computers in Biology and Medicine},
+volume = {194},
+pages = {110246},
+year = {2025},
+issn = {0010-4825},
+doi = {https://doi.org/10.1016/j.compbiomed.2025.110246},
+url = {https://www.sciencedirect.com/science/article/pii/S0010482525005979},
+author = {Isabelle Lorge and Dan W. Joyce and Niall Taylor and Alejo Nevado-Holgado and Andrea Cipriani and Andrey Kormilitzin},
+keywords = {DTD, LLM, ML, Synthetic data},
+}
+      
